@@ -1,0 +1,7 @@
+gradio>=5.0
+sentence-transformers>=3.0
+google-genai>=1.0
+numpy>=1.26
+pypdf>=4.0
+requests>=2.31
+beautifulsoup4>=4.12

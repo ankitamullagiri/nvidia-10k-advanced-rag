@@ -13,3 +13,6 @@ docs/*.pdf
 !docs/slides.pdf
 *.h5
 NVIDIA-2025-Annual-Report.pdf
+.cache/
+.gradio/
+.pytest_cache/
