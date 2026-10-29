@@ -18,6 +18,19 @@ from .sources import PDF_PATH, load_sec_filing
 
 log = logging.getLogger(__name__)
 
+# Hugging Face ZeroGPU: functions decorated with @spaces.GPU get a GPU attached on demand.
+# Outside a ZeroGPU Space (locally, in CI) the `spaces` package is absent, so fall back to CPU.
+try:
+    import spaces
+
+    gpu = spaces.GPU(duration=20)
+    DEVICE = "cuda"
+except ImportError:
+    def gpu(fn):
+        return fn
+
+    DEVICE = "cpu"
+
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 LLM_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
@@ -72,10 +85,14 @@ def build_pipeline() -> tuple[RAGPipeline, str]:
     vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
     baseline_engine = index.as_query_engine(similarity_top_k=3, text_qa_template=PromptTemplate(VANILLA_PROMPT))
 
-    reranker = CrossEncoder(RERANK_MODEL)
+    # The cross-encoder is the heaviest per-question model call, so it runs on the GPU
+    reranker = CrossEncoder(RERANK_MODEL, device=DEVICE)
 
+    @gpu
     def rerank(query: str, texts: list[str]) -> list[float]:
         return reranker.predict([(query, t) for t in texts]).tolist()
+
+    log.info("Reranker on %s", DEVICE)
 
     def llm(prompt: str) -> str:
         return Settings.llm.complete(prompt).text
