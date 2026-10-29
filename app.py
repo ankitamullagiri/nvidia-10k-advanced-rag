@@ -10,7 +10,7 @@ import logging
 
 import gradio as gr
 
-from rag.build import build_pipeline
+from rag.build import build_pipeline, load_reranker
 from rag.pipeline import RAGResult
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -27,6 +27,7 @@ EXAMPLES = [
 ]
 
 try:
+    load_reranker()
     PIPELINE, SOURCE_INFO = build_pipeline()
     STARTUP_ERROR = None
 except Exception as exc:  # show a clear message in the UI instead of a crashed Space
@@ -77,7 +78,7 @@ def answer(question: str, mode: str):
     return enhanced, baseline
 
 
-with gr.Blocks(title="NVIDIA 10-K RAG", theme=gr.themes.Soft()) as demo:
+with gr.Blocks(title="NVIDIA 10-K RAG") as demo:
     gr.Markdown(
         "# Ask NVIDIA's FY2025 Annual Report\n"
         "Advanced RAG with **LlamaIndex + ChromaDB**: LLM query rewriting → hybrid BM25 + vector retrieval (RRF) → "
@@ -103,4 +104,4 @@ with gr.Blocks(title="NVIDIA 10-K RAG", theme=gr.themes.Soft()) as demo:
         trigger(answer, inputs=[question, mode], outputs=[enhanced_out, baseline_out], concurrency_limit=2)
 
 if __name__ == "__main__":
-    demo.queue(max_size=20).launch()
+    demo.queue(max_size=20).launch(theme=gr.themes.Soft())

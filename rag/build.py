@@ -3,7 +3,7 @@
 - SimpleDirectoryReader + SentenceSplitter(512, 50) for loading and chunking
 - all-MiniLM-L6-v2 embeddings stored in ChromaDB through LlamaIndex's ChromaVectorStore
 - LlamaIndex BM25Retriever and VectorIndexRetriever (top 10 each)
-- cross-encoder/ms-marco-MiniLM-L-6-v2 for reranking
+- cross-encoder/ms-marco-MiniLM-L-6-v2 for reranking (on GPU when running on ZeroGPU)
 - Gemini 2.5 Flash through LlamaIndex's GoogleGenAI integration
 """
 
@@ -18,6 +18,10 @@ from .sources import PDF_PATH, load_sec_filing
 
 log = logging.getLogger(__name__)
 
+EMBED_MODEL = "all-MiniLM-L6-v2"
+RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+LLM_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+
 # Hugging Face ZeroGPU: functions decorated with @spaces.GPU get a GPU attached on demand.
 # Outside a ZeroGPU Space (locally, in CI) the `spaces` package is absent, so fall back to CPU.
 try:
@@ -31,9 +35,24 @@ except ImportError:
 
     DEVICE = "cpu"
 
-EMBED_MODEL = "all-MiniLM-L6-v2"
-RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-LLM_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+_reranker = None
+
+
+def load_reranker() -> None:
+    """Load the cross-encoder at import time, as ZeroGPU expects for models used on GPU."""
+    global _reranker
+    from sentence_transformers import CrossEncoder
+
+    _reranker = CrossEncoder(RERANK_MODEL, device=DEVICE)
+    log.info("Reranker loaded on %s", DEVICE)
+
+
+# Defined at module level so ZeroGPU always finds a @spaces.GPU function at startup,
+# even if building the index fails later (otherwise the Space is shut down).
+@gpu
+def rerank(query: str, texts: list[str]) -> list[float]:
+    """The cross-encoder is the heaviest per-question model call, so it runs on the GPU."""
+    return _reranker.predict([(query, t) for t in texts]).tolist()
 
 
 def load_documents():
@@ -43,7 +62,13 @@ def load_documents():
     if Path(PDF_PATH).exists():
         docs = SimpleDirectoryReader(input_files=[str(PDF_PATH)]).load_data()
         return docs, f"{Path(PDF_PATH).name} (page numbers)"
-    sections = load_sec_filing()
+    try:
+        sections = load_sec_filing()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Couldn't find {Path(PDF_PATH).name} and the SEC download failed ({exc}). "
+            f"Upload the annual report PDF as '{Path(PDF_PATH).name}' to the root of the Space."
+        ) from exc
     docs = [Document(text=t, metadata={"section": str(i)}) for i, t in enumerate(sections, start=1)]
     return docs, "SEC EDGAR Form 10-K, FY2025 (section numbers)"
 
@@ -57,11 +82,10 @@ def build_pipeline() -> tuple[RAGPipeline, str]:
     from llama_index.llms.google_genai import GoogleGenAI
     from llama_index.retrievers.bm25 import BM25Retriever
     from llama_index.vector_stores.chroma import ChromaVectorStore
-    from sentence_transformers import CrossEncoder
 
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY is not set (add it as a Space secret)")
+        raise RuntimeError("GOOGLE_API_KEY is not set (add it as a Space secret, then restart)")
 
     # Models (same as the notebook)
     Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL)
@@ -85,14 +109,8 @@ def build_pipeline() -> tuple[RAGPipeline, str]:
     vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=10)
     baseline_engine = index.as_query_engine(similarity_top_k=3, text_qa_template=PromptTemplate(VANILLA_PROMPT))
 
-    # The cross-encoder is the heaviest per-question model call, so it runs on the GPU
-    reranker = CrossEncoder(RERANK_MODEL, device=DEVICE)
-
-    @gpu
-    def rerank(query: str, texts: list[str]) -> list[float]:
-        return reranker.predict([(query, t) for t in texts]).tolist()
-
-    log.info("Reranker on %s", DEVICE)
+    if _reranker is None:
+        load_reranker()
 
     def llm(prompt: str) -> str:
         return Settings.llm.complete(prompt).text
