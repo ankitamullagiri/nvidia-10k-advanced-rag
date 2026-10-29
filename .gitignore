@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+.Rhistory
+.RData
+.Rproj.user/
+.DS_Store
+.env
+output/
+chroma_db/
+docs/*.pdf
+!docs/slides.pdf
+*.h5
+NVIDIA-2025-Annual-Report.pdf
