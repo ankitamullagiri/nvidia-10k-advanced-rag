@@ -1,17 +1,11 @@
-import numpy as np
+"""Tests for RRF and the pipeline orchestration, using fakes shaped like LlamaIndex objects."""
+
+from dataclasses import dataclass, field
+
 import pytest
 
-from rag.bm25 import BM25
 from rag.fusion import reciprocal_rank_fusion
-from rag.pipeline import GROUNDED_PROMPT, RAGPipeline
-from rag.text import Chunk
-
-DOCS = [
-    "Data Center revenue grew strongly driven by demand for Hopper GPUs.",
-    "Gaming revenue was flat compared with the prior year.",
-    "Risk factors include export controls and supply chain constraints.",
-    "Automotive revenue increased from self-driving platforms.",
-]
+from rag.pipeline import GROUNDED_PROMPT, REWRITE_PROMPT, RAGPipeline
 
 
 # ---------- RRF ----------
@@ -37,27 +31,45 @@ def test_rrf_empty():
     assert reciprocal_rank_fusion([[], []]) == []
 
 
-# ---------- BM25 ----------
-def test_bm25_finds_keyword_match():
-    assert BM25(DOCS).top_k("export controls risk", 1) == [2]
+# ---------- fakes with the same interface as LlamaIndex nodes / retrievers ----------
+@dataclass
+class FakeNode:
+    node_id: str
+    text: str
+    metadata: dict = field(default_factory=dict)
+
+    def get_content(self):
+        return self.text
 
 
-def test_bm25_ignores_unknown_terms():
-    assert BM25(DOCS).top_k("ice cream division", 3) == []
+@dataclass
+class FakeNodeWithScore:
+    node: FakeNode
+    score: float = 0.0
 
 
-# ---------- Pipeline with fake models ----------
-VOCAB = ["data", "center", "gaming", "risk", "export", "automotive", "revenue"]
+class FakeRetriever:
+    def __init__(self, nodes):
+        self.nodes = nodes
+        self.queries = []
+
+    def retrieve(self, query):
+        self.queries.append(query)
+        return [FakeNodeWithScore(n) for n in self.nodes]
 
 
-def fake_embed(texts):
-    """Bag-of-words vectors over a tiny vocabulary: enough to test the plumbing."""
-    return np.array([[t.lower().count(w) for w in VOCAB] for t in texts], dtype=float) + 1e-3
+@dataclass
+class FakeResponse:
+    response: str
+    source_nodes: list
 
 
-def fake_rerank(query, texts):
-    q = set(query.lower().split())
-    return [len(q & set(t.lower().split())) for t in texts]
+class FakeEngine:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+    def query(self, q):
+        return FakeResponse("BASELINE ANSWER", [FakeNodeWithScore(n) for n in self.nodes[:3]])
 
 
 class FakeLLM:
@@ -66,32 +78,46 @@ class FakeLLM:
 
     def __call__(self, prompt):
         self.prompts.append(prompt)
-        if prompt.startswith("You are a search query optimizer"):
-            return "data center segment revenue"
-        return "ANSWER"
+        return "data center segment revenue" if prompt.startswith(REWRITE_PROMPT[:30]) else "ANSWER"
+
+
+N = {i: FakeNode(f"n{i}", f"chunk {i} data center" if i in (2, 5) else f"chunk {i}", {"page_label": str(i)}) for i in range(1, 8)}
 
 
 @pytest.fixture
 def pipe():
-    chunks = [Chunk(id=i, text=t, page=i + 1) for i, t in enumerate(DOCS)]
-    return RAGPipeline(chunks, fake_embed, fake_rerank, FakeLLM())
+    bm25 = FakeRetriever([N[1], N[2], N[3], N[4]])
+    vector = FakeRetriever([N[5], N[2], N[6], N[7]])
+
+    def rerank(query, texts):  # prefer chunks mentioning "data center"
+        return [1.0 if "data center" in t else 0.0 for t in texts]
+
+    return RAGPipeline(bm25, vector, FakeEngine(list(N.values())), rerank, FakeLLM())
 
 
-def test_enhanced_rewrites_retrieves_and_grounds(pipe):
-    result = pipe.enhanced("how did data centers do?", top_k=2)
+def test_hybrid_retrieve_fuses_and_dedupes(pipe):
+    ids = [n.node.node_id for n in pipe.hybrid_retrieve("q", top_k=8)]
+    assert ids[0] == "n2"  # found by both retrievers
+    assert len(ids) == len(set(ids)) == 7
+
+
+def test_enhanced_rewrites_retrieves_reranks_and_grounds(pipe):
+    result = pipe.enhanced("how did data centers do?")
     assert result.rewritten_query == "data center segment revenue"
-    assert result.sources[0].page == 1
-    assert len(result.sources) == 2
+    assert pipe.bm25_retriever.queries == ["data center segment revenue"]  # retrieval uses the rewrite
+    assert [s.page for s in result.sources[:2]] == ["2", "5"]  # reranker pulled both matches up
+    assert len(result.sources) == 3
     final_prompt = pipe.llm.prompts[-1]
     assert final_prompt.startswith(GROUNDED_PROMPT.split("{context}")[0])
     assert "how did data centers do?" in final_prompt  # answers the user's question, not the rewrite
 
 
-def test_baseline_uses_vector_search_only(pipe):
-    result = pipe.baseline("gaming", top_k=1)
+def test_baseline_uses_query_engine(pipe):
+    result = pipe.baseline("gaming")
+    assert result.answer == "BASELINE ANSWER"
     assert result.rewritten_query is None
-    assert result.sources[0].page == 2
-    assert len(pipe.llm.prompts) == 1  # no rewrite call
+    assert [s.page for s in result.sources] == ["1", "2", "3"]
+    assert pipe.llm.prompts == []  # no rewrite call
 
 
 def test_empty_rewrite_falls_back_to_original(pipe):
@@ -99,6 +125,5 @@ def test_empty_rewrite_falls_back_to_original(pipe):
     assert pipe.rewrite_query("risk") == "risk"
 
 
-def test_mismatched_embeddings_rejected():
-    with pytest.raises(ValueError):
-        RAGPipeline([Chunk(0, "a")], fake_embed, fake_rerank, FakeLLM(), embeddings=np.zeros((2, 7)))
+def test_rerank_handles_no_candidates(pipe):
+    assert pipe.rerank("q", []) == []

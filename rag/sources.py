@@ -1,7 +1,7 @@
-"""Load the NVIDIA FY2025 filing as a list of page texts.
+"""Where the NVIDIA FY2025 filing comes from.
 
 Prefers the annual-report PDF (the document the project was evaluated on) if it is
-present; otherwise downloads the FY2025 Form 10-K from SEC EDGAR.
+present; otherwise rag/build.py falls back to the FY2025 Form 10-K from SEC EDGAR.
 """
 
 from __future__ import annotations
@@ -17,12 +17,6 @@ SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "nvidia-10k-advanced-rag demo 
 WORDS_PER_SECTION = 600  # the HTML filing has no pages, so it is split into sections
 
 
-def load_pdf(path: Path) -> list[str]:
-    from pypdf import PdfReader
-
-    return [page.extract_text() or "" for page in PdfReader(str(path)).pages]
-
-
 def load_sec_filing(url: str = SEC_URL) -> list[str]:
     import requests
     from bs4 import BeautifulSoup
@@ -35,10 +29,3 @@ def load_sec_filing(url: str = SEC_URL) -> list[str]:
     text = re.sub(r"\s+", " ", soup.get_text(" ")).strip()
     words = text.split()
     return [" ".join(words[i : i + WORDS_PER_SECTION]) for i in range(0, len(words), WORDS_PER_SECTION)]
-
-
-def load_document() -> tuple[list[str], str]:
-    """Return (pages, source_label)."""
-    if PDF_PATH.exists():
-        return load_pdf(PDF_PATH), f"{PDF_PATH.name} (page numbers)"
-    return load_sec_filing(), "SEC EDGAR Form 10-K, FY2025 (section numbers)"

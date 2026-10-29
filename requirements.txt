@@ -1,7 +1,12 @@
 gradio>=5.0
+llama-index-core>=0.12
+llama-index-readers-file>=0.4
+llama-index-embeddings-huggingface>=0.5
+llama-index-vector-stores-chroma>=0.4
+llama-index-retrievers-bm25>=0.5
+llama-index-llms-google-genai>=0.1
+chromadb>=0.5
 sentence-transformers>=3.0
-google-genai>=1.0
-numpy>=1.26
 pypdf>=4.0
 requests>=2.31
 beautifulsoup4>=4.12

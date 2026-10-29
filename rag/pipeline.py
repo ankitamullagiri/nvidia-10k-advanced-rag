@@ -1,33 +1,29 @@
-"""Baseline and enhanced RAG pipelines over NVIDIA's FY2025 annual report.
+"""Baseline and enhanced RAG pipelines (same logic as the evaluated notebook).
 
-Models are injected, so the pipeline can be unit-tested with fakes:
-    embed(texts) -> np.ndarray of shape (n, d)
-    rerank(query, texts) -> list[float]          (higher = more relevant)
+The pipeline works on LlamaIndex objects but only relies on their interfaces:
+    retriever.retrieve(query) -> list[NodeWithScore]
+    baseline_engine.query(query) -> Response (with .response and .source_nodes)
+    rerank(query, texts) -> list[float]
     llm(prompt) -> str
+so the orchestration can be unit-tested with lightweight fakes (see tests/).
+The real LlamaIndex + ChromaDB objects are built in rag/build.py.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
-import numpy as np
-
-from .bm25 import BM25
 from .fusion import reciprocal_rank_fusion
-from .text import Chunk
-
-Embedder = Callable[[list[str]], np.ndarray]
-Reranker = Callable[[str, list[str]], list[float]]
-LLM = Callable[[str], str]
 
 # Prompts are kept verbatim from the evaluated notebook.
 VANILLA_PROMPT = (
     "Context information is below.\n"
     "---------------------\n"
-    "{context}\n"
+    "{context_str}\n"
     "---------------------\n"
-    "Answer the question: {question}\n"
+    "Answer the question: {query_str}\n"
 )
 
 REWRITE_PROMPT = (
@@ -55,89 +51,91 @@ Answer (grounded in context only):
 
 
 @dataclass
+class Source:
+    text: str
+    page: str | None
+
+
+@dataclass
 class RAGResult:
     mode: str
     question: str
     answer: str
-    sources: list[Chunk]
+    sources: list[Source]
     rewritten_query: str | None = None
     trace: list[str] = field(default_factory=list)
+
+
+def _source(node_with_score: Any) -> Source:
+    node = node_with_score.node
+    meta = getattr(node, "metadata", {}) or {}
+    return Source(node.get_content(), meta.get("page_label") or meta.get("section"))
 
 
 class RAGPipeline:
     def __init__(
         self,
-        chunks: list[Chunk],
-        embed: Embedder,
-        rerank: Reranker,
-        llm: LLM,
-        embeddings: np.ndarray | None = None,
+        bm25_retriever: Any,
+        vector_retriever: Any,
+        baseline_engine: Any,
+        rerank: Callable[[str, list[str]], list[float]],
+        llm: Callable[[str], str],
         rrf_k: int = 60,
     ):
-        if not chunks:
-            raise ValueError("No chunks to index")
-        self.chunks = chunks
-        self.embed = embed
+        self.bm25_retriever = bm25_retriever
+        self.vector_retriever = vector_retriever
+        self.baseline_engine = baseline_engine
         self.rerank_fn = rerank
         self.llm = llm
         self.rrf_k = rrf_k
-        vectors = embeddings if embeddings is not None else embed([c.text for c in chunks])
-        self.vectors = _normalise(np.asarray(vectors, dtype=np.float32))
-        if self.vectors.shape[0] != len(chunks):
-            raise ValueError("embeddings and chunks have different lengths")
-        self.bm25 = BM25([c.text for c in chunks])
 
-    # ---------- retrieval ----------
-    def vector_search(self, query: str, k: int) -> list[int]:
-        q = _normalise(np.asarray(self.embed([query]), dtype=np.float32))[0]
-        sims = self.vectors @ q
-        return [int(i) for i in np.argsort(-sims, kind="stable")[:k]]
-
-    def hybrid_search(self, query: str, per_retriever: int = 10, top_k: int = 8) -> list[int]:
-        fused = reciprocal_rank_fusion(
-            [self.bm25.top_k(query, per_retriever), self.vector_search(query, per_retriever)],
-            k=self.rrf_k,
-            top_k=top_k,
-        )
-        return [int(doc_id) for doc_id, _ in fused]
-
-    def rerank(self, query: str, ids: list[int], top_k: int = 3) -> list[int]:
-        if not ids:
-            return []
-        scores = self.rerank_fn(query, [self.chunks[i].text for i in ids])
-        ranked = sorted(zip(ids, scores), key=lambda x: x[1], reverse=True)
-        return [i for i, _ in ranked[:top_k]]
-
+    # ---------- enhanced pipeline steps ----------
     def rewrite_query(self, query: str) -> str:
+        """Short or vague queries embed poorly; rewriting adds financial terminology."""
         rewritten = self.llm(REWRITE_PROMPT.format(query=query)).strip()
         return rewritten or query
 
+    def hybrid_retrieve(self, query: str, top_k: int = 8) -> list[Any]:
+        """BM25 + vector search (top 10 each), fused with Reciprocal Rank Fusion."""
+        bm25_results = self.bm25_retriever.retrieve(query)
+        vector_results = self.vector_retriever.retrieve(query)
+        node_map = {n.node.node_id: n for n in [*bm25_results, *vector_results]}
+        fused = reciprocal_rank_fusion(
+            [[n.node.node_id for n in bm25_results], [n.node.node_id for n in vector_results]],
+            k=self.rrf_k,
+            top_k=top_k,
+        )
+        return [node_map[node_id] for node_id, _ in fused]
+
+    def rerank(self, query: str, nodes: list[Any], top_k: int = 3) -> list[Any]:
+        """Cross-encoder reads query and chunk together: slower but more accurate."""
+        if not nodes:
+            return []
+        scores = self.rerank_fn(query, [n.node.get_content() for n in nodes])
+        ranked = sorted(zip(nodes, scores), key=lambda x: x[1], reverse=True)
+        return [node for node, _ in ranked[:top_k]]
+
     # ---------- pipelines ----------
-    def baseline(self, question: str, top_k: int = 3) -> RAGResult:
-        ids = self.vector_search(question, top_k)
-        sources = [self.chunks[i] for i in ids]
-        answer = self.llm(VANILLA_PROMPT.format(context=_join(sources), question=question)).strip()
-        return RAGResult("baseline", question, answer, sources, trace=[f"Vector search → top {top_k}"])
+    def baseline(self, question: str) -> RAGResult:
+        response = self.baseline_engine.query(question)
+        sources = [_source(n) for n in response.source_nodes]
+        return RAGResult(
+            "baseline", question, str(response.response).strip(), sources,
+            trace=["ChromaDB vector search → top 3", "Vanilla prompt"],
+        )
 
-    def enhanced(self, question: str, candidates: int = 8, top_k: int = 3) -> RAGResult:
+    def enhanced(self, question: str) -> RAGResult:
         rewritten = self.rewrite_query(question)
-        cand_ids = self.hybrid_search(rewritten, top_k=candidates)
-        ids = self.rerank(rewritten, cand_ids, top_k=top_k)
-        sources = [self.chunks[i] for i in ids]
-        answer = self.llm(GROUNDED_PROMPT.format(context=_join(sources), question=question)).strip()
-        trace = [
-            "LLM query rewrite",
-            f"BM25 + vector (top 10 each) → RRF → {len(cand_ids)} candidates",
-            f"Cross-encoder rerank → top {len(ids)}",
-            "Grounded, citation-required answer",
-        ]
-        return RAGResult("enhanced", question, answer, sources, rewritten, trace)
-
-
-def _normalise(x: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(x, axis=1, keepdims=True)
-    return x / np.where(norms == 0, 1, norms)
-
-
-def _join(chunks: list[Chunk]) -> str:
-    return "\n\n---\n\n".join(c.text for c in chunks)
+        candidates = self.hybrid_retrieve(rewritten, top_k=8)
+        top_nodes = self.rerank(rewritten, candidates, top_k=3)
+        context = "\n\n---\n\n".join(n.node.get_content() for n in top_nodes)
+        answer = self.llm(GROUNDED_PROMPT.format(context=context, question=question)).strip()
+        return RAGResult(
+            "enhanced", question, answer, [_source(n) for n in top_nodes], rewritten,
+            trace=[
+                "LLM query rewrite",
+                f"BM25 + ChromaDB vector search (top 10 each) → RRF → {len(candidates)} candidates",
+                f"Cross-encoder rerank → top {len(top_nodes)}",
+                "Grounded, citation-required answer",
+            ],
+        )

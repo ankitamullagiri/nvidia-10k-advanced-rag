@@ -38,17 +38,31 @@ The biggest win was on the risk-factors query (retrieval precision 0.67 → 1.00
 - **Modest retrieval precision overall:** filings contain many related passages that don't directly answer the question, and an LLM judge may score relevance more strictly than a human would.
 - **Next steps:** human-labelled relevance judgements, metadata filtering by 10-K section, and a fallback that answers out-of-scope questions with what *is* in the filing.
 
+## Project structure
+
+```
+├── advanced_rag.ipynb   # original notebook: build, evaluate, demo log
+├── app.py               # Gradio web app (baseline vs enhanced side by side)
+├── rag/
+│   ├── build.py         # LlamaIndex + ChromaDB: load, chunk, embed, retrievers, Gemini
+│   ├── pipeline.py      # query rewrite → hybrid retrieval → RRF → rerank → grounded answer
+│   ├── fusion.py        # Reciprocal Rank Fusion
+│   └── sources.py       # annual-report PDF, or the 10-K from SEC EDGAR as a fallback
+└── tests/               # pytest suite using fakes, so no models or API key needed
+```
+
 ## Run it
 
 ```bash
-pip install llama-index llama-index-llms-google-genai llama-index-embeddings-huggingface \
-            llama-index-vector-stores-chroma llama-index-retrievers-bm25 chromadb \
-            sentence-transformers rank_bm25 pypdf nest_asyncio
-export GOOGLE_API_KEY=...   # or enter it when the notebook prompts
+pip install -r requirements.txt
+export GOOGLE_API_KEY=...        # free key from aistudio.google.com/apikey
+python app.py                    # opens the Gradio app at http://127.0.0.1:7860
 ```
 
-Download the FY2025 annual report (10-K) from [NVIDIA Investor Relations](https://investor.nvidia.com/financial-info/annual-reports-and-proxies/default.aspx), save it as `NVIDIA-2025-Annual-Report.pdf` next to the notebook, then run `advanced_rag.ipynb`.
+Optionally save the FY2025 annual report from [NVIDIA Investor Relations](https://investor.nvidia.com/financial-info/annual-reports-and-proxies/default.aspx) as `NVIDIA-2025-Annual-Report.pdf` in the repo root. Without it, the app loads the 10-K from SEC EDGAR.
+
+**Tests:** `pip install -r requirements-dev.txt && pytest`
 
 ## Tech stack
 
-Python · LlamaIndex · ChromaDB · BM25 · Sentence-Transformers · cross-encoder reranking · Gemini 2.5 Flash · LLM-as-judge evaluation
+Python · LlamaIndex · ChromaDB · BM25 · Sentence-Transformers · cross-encoder reranking · Gemini 2.5 Flash · LLM-as-judge evaluation · Gradio · pytest · GitHub Actions
