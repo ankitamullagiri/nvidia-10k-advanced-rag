@@ -1,8 +1,13 @@
 # Advanced RAG over NVIDIA's 2025 Annual Report
 
+[![Live demo](https://img.shields.io/badge/🤗%20Live%20demo-Hugging%20Face-yellow)](https://huggingface.co/spaces/nautankii/nvidia-10k-advanced-rag)
+[![tests](https://github.com/ankitamullagiri/nvidia-10k-advanced-rag/actions/workflows/tests.yml/badge.svg)](https://github.com/ankitamullagiri/nvidia-10k-advanced-rag/actions)
+
 A retrieval-augmented generation (RAG) system that answers questions about NVIDIA's 181-page FY2025 Form 10-K. It compares a baseline pipeline against an enhanced one with query rewriting, hybrid retrieval and cross-encoder reranking.
 
 **Context:** MSc Business Analytics, Warwick Business School (Generative AI & AI Applications) · solo project · Python
+
+👉 **[Try it live on Hugging Face](https://huggingface.co/spaces/nautankii/nvidia-10k-advanced-rag)**: ask your own question and compare the baseline and enhanced answers side by side.
 
 ## Why RAG here
 
