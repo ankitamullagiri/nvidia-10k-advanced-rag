@@ -75,13 +75,18 @@ def load_documents():
     return docs, "SEC EDGAR Form 10-K, FY2025 (section numbers)"
 
 
+def _secret(name: str) -> str:
+    """Read a key from the environment, ignoring stray whitespace or quotes from pasting."""
+    return os.environ.get(name, "").strip().strip("'\"").strip()
+
+
 def make_llm():
     """Gemini 2.5 Flash via OpenRouter if that key is set, otherwise via Google directly."""
-    if key := os.environ.get("OPENROUTER_API_KEY"):
+    if key := _secret("OPENROUTER_API_KEY"):
         from llama_index.llms.openrouter import OpenRouter
 
         return OpenRouter(api_key=key, model=OPENROUTER_MODEL, max_tokens=1024), f"{OPENROUTER_MODEL} via OpenRouter"
-    if key := os.environ.get("GOOGLE_API_KEY"):
+    if key := _secret("GOOGLE_API_KEY"):
         from llama_index.llms.google_genai import GoogleGenAI
 
         return GoogleGenAI(model=LLM_MODEL, api_key=key), f"{LLM_MODEL} via Google AI"
