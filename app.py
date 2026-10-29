@@ -71,10 +71,14 @@ def answer(question: str, mode: str):
         baseline = render(PIPELINE.baseline(question)) if mode == "Compare with baseline" else ""
     except Exception as exc:
         log.exception("Query failed")
-        msg = "⚠️ The language model is unavailable right now (likely a rate limit). Try again in a minute."
-        if "API key" in str(exc) or "PERMISSION_DENIED" in str(exc):
+        detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+        if "429" in detail or "RESOURCE_EXHAUSTED" in detail or "quota" in detail.lower():
+            msg = "⚠️ Gemini rate limit reached. Try again in a minute."
+        elif "API key" in detail or "PERMISSION_DENIED" in detail:
             msg = "⚠️ The Gemini API key is missing or invalid."
-        return msg, ""
+        else:
+            msg = "⚠️ Something went wrong while answering."
+        return f"{msg}\n\n<small>`{html.escape(detail)}`</small>", ""
     return enhanced, baseline
 
 
