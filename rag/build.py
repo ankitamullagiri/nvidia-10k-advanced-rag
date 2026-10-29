@@ -4,7 +4,8 @@
 - all-MiniLM-L6-v2 embeddings stored in ChromaDB through LlamaIndex's ChromaVectorStore
 - LlamaIndex BM25Retriever and VectorIndexRetriever (top 10 each)
 - cross-encoder/ms-marco-MiniLM-L-6-v2 for reranking (on GPU when running on ZeroGPU)
-- Gemini 2.5 Flash through LlamaIndex's GoogleGenAI integration
+- Gemini 2.5 Flash through LlamaIndex, either via OpenRouter (OPENROUTER_API_KEY)
+  or directly via Google's API (GOOGLE_API_KEY)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 EMBED_MODEL = "all-MiniLM-L6-v2"
 RERANK_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 LLM_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash")
 
 # Hugging Face ZeroGPU: functions decorated with @spaces.GPU get a GPU attached on demand.
 # Outside a ZeroGPU Space (locally, in CI) the `spaces` package is absent, so fall back to CPU.
@@ -73,23 +75,31 @@ def load_documents():
     return docs, "SEC EDGAR Form 10-K, FY2025 (section numbers)"
 
 
+def make_llm():
+    """Gemini 2.5 Flash via OpenRouter if that key is set, otherwise via Google directly."""
+    if key := os.environ.get("OPENROUTER_API_KEY"):
+        from llama_index.llms.openrouter import OpenRouter
+
+        return OpenRouter(api_key=key, model=OPENROUTER_MODEL, max_tokens=1024), f"{OPENROUTER_MODEL} via OpenRouter"
+    if key := os.environ.get("GOOGLE_API_KEY"):
+        from llama_index.llms.google_genai import GoogleGenAI
+
+        return GoogleGenAI(model=LLM_MODEL, api_key=key), f"{LLM_MODEL} via Google AI"
+    raise RuntimeError("Set OPENROUTER_API_KEY or GOOGLE_API_KEY as a Space secret, then restart")
+
+
 def build_pipeline() -> tuple[RAGPipeline, str]:
     import chromadb
     from llama_index.core import PromptTemplate, Settings, StorageContext, VectorStoreIndex
     from llama_index.core.node_parser import SentenceSplitter
     from llama_index.core.retrievers import VectorIndexRetriever
     from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-    from llama_index.llms.google_genai import GoogleGenAI
     from llama_index.retrievers.bm25 import BM25Retriever
     from llama_index.vector_stores.chroma import ChromaVectorStore
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise RuntimeError("GOOGLE_API_KEY is not set (add it as a Space secret, then restart)")
-
     # Models (same as the notebook)
+    Settings.llm, llm_label = make_llm()
     Settings.embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL)
-    Settings.llm = GoogleGenAI(model=LLM_MODEL, api_key=api_key)
 
     # Load and chunk
     documents, source_label = load_documents()
@@ -116,4 +126,4 @@ def build_pipeline() -> tuple[RAGPipeline, str]:
         return Settings.llm.complete(prompt).text
 
     pipeline = RAGPipeline(bm25_retriever, vector_retriever, baseline_engine, rerank, llm)
-    return pipeline, f"{source_label} · {len(nodes)} chunks in ChromaDB"
+    return pipeline, f"{source_label} · {len(nodes)} chunks in ChromaDB · {llm_label}"

@@ -72,12 +72,12 @@ def answer(question: str, mode: str):
     except Exception as exc:
         log.exception("Query failed")
         detail = f"{type(exc).__name__}: {str(exc)[:300]}"
-        if "402" in detail or "prepayment" in detail.lower() or "billing" in detail.lower():
-            msg = "⚠️ The Gemini API key's project has no credits. Use a free-tier key (no billing linked)."
+        if "402" in detail or "credits" in detail.lower() or "billing" in detail.lower():
+            msg = "⚠️ The LLM API key has run out of credits."
         elif "429" in detail or "RESOURCE_EXHAUSTED" in detail or "quota" in detail.lower():
-            msg = "⚠️ Gemini rate limit reached. Try again in a minute."
+            msg = "⚠️ Rate limit reached. Try again in a minute."
         elif "API key" in detail or "PERMISSION_DENIED" in detail:
-            msg = "⚠️ The Gemini API key is missing or invalid."
+            msg = "⚠️ The LLM API key is missing or invalid."
         else:
             msg = "⚠️ Something went wrong while answering."
         safe = detail.replace("`", "'")  # a code span shows text literally, so no HTML escaping

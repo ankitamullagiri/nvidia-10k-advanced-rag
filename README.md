@@ -55,7 +55,7 @@ The biggest win was on the risk-factors query (retrieval precision 0.67 → 1.00
 
 ```bash
 pip install -r requirements.txt
-export GOOGLE_API_KEY=...        # free key from aistudio.google.com/apikey
+export OPENROUTER_API_KEY=...    # or GOOGLE_API_KEY=... (free key from aistudio.google.com/apikey)
 python app.py                    # opens the Gradio app at http://127.0.0.1:7860
 ```
 
