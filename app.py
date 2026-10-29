@@ -71,7 +71,8 @@ def answer(question: str, mode: str):
         baseline = render(PIPELINE.baseline(question)) if mode == "Compare with baseline" else ""
     except Exception as exc:
         log.exception("Query failed")
-        detail = f"{type(exc).__name__}: {str(exc)[:300]}"
+        root = exc.__cause__ or exc.__context__ or exc  # ZeroGPU wraps the real error
+        detail = f"{type(root).__name__}: {str(root)[:300] or str(exc)[:300] or 'no message, see Logs → Container'}"
         if "402" in detail or "credits" in detail.lower() or "billing" in detail.lower():
             msg = "⚠️ The LLM API key has run out of credits."
         elif "429" in detail or "RESOURCE_EXHAUSTED" in detail or "quota" in detail.lower():

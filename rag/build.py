@@ -52,9 +52,27 @@ def load_reranker() -> None:
 # Defined at module level so ZeroGPU always finds a @spaces.GPU function at startup,
 # even if building the index fails later (otherwise the Space is shut down).
 @gpu
-def rerank(query: str, texts: list[str]) -> list[float]:
+def rerank_gpu(query: str, texts: list[str]) -> list[float]:
     """The cross-encoder is the heaviest per-question model call, so it runs on the GPU."""
     return _reranker.predict([(query, t) for t in texts]).tolist()
+
+
+_cpu_reranker = None
+
+
+def rerank(query: str, texts: list[str]) -> list[float]:
+    """Rerank on GPU; if ZeroGPU fails (quota, worker error), use a CPU copy of the model."""
+    global _cpu_reranker
+    if DEVICE == "cuda":
+        try:
+            return rerank_gpu(query, texts)
+        except Exception:
+            log.exception("GPU rerank failed, falling back to CPU")
+    if _cpu_reranker is None:
+        from sentence_transformers import CrossEncoder
+
+        _cpu_reranker = _reranker if DEVICE == "cpu" else CrossEncoder(RERANK_MODEL, device="cpu")
+    return _cpu_reranker.predict([(query, t) for t in texts]).tolist()
 
 
 def load_documents():
